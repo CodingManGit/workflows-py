@@ -1,0 +1,3 @@
+[submodule "external/llamaindex_custom_docs"]
+	path = external/llamaindex_custom_docs
+	url = https://github.com/CodingManGit/llamaindex_custom_docs.git
