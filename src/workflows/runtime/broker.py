@@ -304,7 +304,16 @@ class WorkflowBroker(Generic[MODEL_T]):
         waiter_id = waiter_id or f"waiter_{event_str}_{requirements_str}"
 
         waiter = next((w for w in collected_waiters if w.waiter_id == waiter_id), None)
-        if waiter is None or waiter.resolved_event is None:
+        if waiter is not None and waiter.resolved_event is not None:
+            # Event has already arrived or timeout occurred
+            step_ctx.returns.return_values.append(DeleteWaiter(waiter_id=waiter_id))
+            if isinstance(waiter.resolved_event, TimeoutError):
+                # Re-raise the timeout error
+                raise waiter.resolved_event
+            return cast(T, waiter.resolved_event)
+        elif waiter is not None:
+            # Waiter exists but no event yet - this happens when resuming from a serialized context
+            # Create a new waiter to re-establish the timeout
             raise WaitingForEvent(
                 AddWaiter(
                     waiter_id=waiter_id,
@@ -315,8 +324,16 @@ class WorkflowBroker(Generic[MODEL_T]):
                 )
             )
         else:
-            step_ctx.returns.return_values.append(DeleteWaiter(waiter_id=waiter_id))
-            return cast(T, waiter.resolved_event)
+            # First time waiting for this event, create a waiter
+            raise WaitingForEvent(
+                AddWaiter(
+                    waiter_id=waiter_id,
+                    requirements=requirements,
+                    timeout=timeout,
+                    event_type=event_type,
+                    waiter_event=waiter_event,
+                )
+            )
 
     def _get_full_path(self, ev_type: Type[Event]) -> str:
         return f"{ev_type.__module__}.{ev_type.__name__}"

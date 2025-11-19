@@ -29,6 +29,7 @@ from workflows.runtime.types.commands import (
     CommandHalt,
     CommandPublishEvent,
     CommandQueueEvent,
+    CommandQueueWaiterTimeout,
     CommandRunWorker,
     WorkflowCommand,
     indicates_exit,
@@ -62,6 +63,7 @@ from workflows.runtime.types.ticks import (
     TickPublishEvent,
     TickStepResult,
     TickTimeout,
+    TickWaiterTimeout,
     WorkflowTick,
 )
 import logging
@@ -200,6 +202,16 @@ class _ControlLoopRunner:
         elif isinstance(command, CommandFailWorkflow):
             await self.cleanup_tasks()
             raise command.exception
+        elif isinstance(command, CommandQueueWaiterTimeout):
+            # Queue a waiter timeout tick after the specified delay
+            self.queue_tick(
+                TickWaiterTimeout(
+                    step_name=command.step_name,
+                    waiter_id=command.waiter_id,
+                ),
+                delay=command.timeout,
+            )
+            return None
         else:
             raise ValueError(f"Unknown command type: {type(command)}")
 
@@ -335,6 +347,8 @@ def _reduce_tick(
         return _process_publish_event_tick(tick, init)
     elif isinstance(tick, TickTimeout):
         return _process_timeout_tick(tick, init)
+    elif isinstance(tick, TickWaiterTimeout):
+        return _process_waiter_timeout_tick(tick, init, now_seconds)
     else:
         raise ValueError(f"Unknown tick type: {type(tick)}")
 
@@ -505,6 +519,17 @@ def _process_step_result_tick(
                 worker_state.collected_waiters.append(new_waiter)
                 if result.waiter_event:
                     commands.append(CommandPublishEvent(event=result.waiter_event))
+                
+                # Queue a timeout tick if timeout is specified
+                if result.timeout is not None:
+                    # We need to add this to the runner's queue, but we don't have access here
+                    # Instead, we'll add a special command to handle this
+                    # This will be handled by the runner to queue a delayed tick
+                    commands.append(CommandQueueWaiterTimeout(
+                        step_name=tick.step_name,
+                        waiter_id=result.waiter_id,
+                        timeout=result.timeout
+                    ))
 
         elif isinstance(result, DeleteWaiter):
             if did_complete_step:  # allow retries to grab the waiter events
@@ -687,3 +712,39 @@ def _process_timeout_tick(
             )
         ),
     ]
+
+
+def _process_waiter_timeout_tick(
+    tick: TickWaiterTimeout, init: BrokerState, now_seconds: float
+) -> tuple[BrokerState, list[WorkflowCommand]]:
+    """Process a waiter timeout tick by raising TimeoutError for the specific waiter"""
+    state = init.deepcopy()
+    
+    # Find the waiter that timed out
+    worker_state = state.workers.get(tick.step_name)
+    if worker_state is None:
+        logger.warning(f"Waiter timeout for unknown step: {tick.step_name}")
+        return state, []
+    
+    waiter = next((w for w in worker_state.collected_waiters if w.waiter_id == tick.waiter_id), None)
+    if waiter is None:
+        logger.warning(f"Waiter timeout for unknown waiter: {tick.waiter_id}")
+        return state, []
+    
+    # Mark the waiter as timed out by setting a special resolved_event
+    # This will cause the next wait_for_event call to raise TimeoutError
+    waiter_index = worker_state.collected_waiters.index(waiter)
+    worker_state.collected_waiters[waiter_index] = replace(
+        waiter,
+        resolved_event=TimeoutError(f"Timeout waiting for event {waiter.waiting_for_event.__name__ if waiter.waiting_for_event else 'Unknown'}")
+    )
+    
+    # Re-queue the original event to trigger the step again
+    commands = _add_or_enqueue_event(
+        EventAttempt(event=waiter.event),
+        tick.step_name,
+        worker_state,
+        now_seconds,
+    )
+    
+    return state, commands

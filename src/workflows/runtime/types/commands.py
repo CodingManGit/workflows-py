@@ -2,7 +2,7 @@
 # Copyright (c) 2025 LlamaIndex Inc.
 
 """
-Commands returned by the control loop's tick reducer.
+Commands returned by control loop's tick reducer.
 
 The control loop follows a reducer pattern:
   1. Wait for a tick (event, step result, timeout, etc.)
@@ -59,6 +59,14 @@ class CommandPublishEvent:
     event: Event
 
 
+@dataclass(frozen=True)
+class CommandQueueWaiterTimeout:
+    """Queue a waiter timeout tick after a delay"""
+    step_name: str
+    waiter_id: str
+    timeout: float
+
+
 WorkflowCommand = Union[
     CommandRunWorker,
     CommandQueueEvent,
@@ -66,6 +74,7 @@ WorkflowCommand = Union[
     CommandCompleteRun,
     CommandFailWorkflow,
     CommandPublishEvent,
+    CommandQueueWaiterTimeout,
 ]
 
 

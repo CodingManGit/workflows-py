@@ -65,6 +65,14 @@ class TickTimeout:
     timeout: float
 
 
+@dataclass(frozen=True)
+class TickWaiterTimeout:
+    """When processed, times out a specific waiter, raising TimeoutError"""
+
+    step_name: str
+    waiter_id: str
+
+
 WorkflowTick = Union[
-    TickStepResult[R], TickAddEvent, TickCancelRun, TickPublishEvent, TickTimeout
+    TickStepResult[R], TickAddEvent, TickCancelRun, TickPublishEvent, TickTimeout, TickWaiterTimeout
 ]
